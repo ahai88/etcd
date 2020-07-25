@@ -23,19 +23,20 @@ import (
 
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
-	storage Storage
+	storage Storage // 前面提到的存放已经持久化数据的Storage接口
 
 	// unstable contains all unstable entries and snapshot.
 	// they will be saved into storage.
-	unstable unstable
+	unstable unstable // 前面分析过的unstable结构体，用于保存应用层还没有持久化的数据
 
+	// 需要说明的是，一条日志数据，首先需要被提交（committed）成功，然后才能被应用（applied）到状态机中。因此，以下不等式一直成立：applied <= committed
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
-	committed uint64
+	committed uint64 // 保存当前提交的日志数据索引
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
-	applied uint64
+	applied uint64 // 保存当前传入状态机的数据最高索引
 
 	logger Logger
 

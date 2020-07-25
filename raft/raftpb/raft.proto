@@ -16,9 +16,13 @@ enum EntryType {
 }
 
 message Entry {
+    // 选举任期，每次选举之后递增1。它的主要作用是标记信息的时效性，比方说当一个节点发出来的消息中携带的term是2，而另一个节点携带的term是3，那我们就认为第一个节点的信息过时了
 	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+	// 当前这个entry在整个raft日志中的位置索引。有了Term和Index之后，一个log entry就能被唯一标识
 	optional uint64     Index = 3 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+	// 当前entry的类型，目前etcd支持两种类型：EntryNormal和EntryConfChange，EntryNormal代表当前Entry是对状态机的操作，EntryConfChange则代表对当前集群配置进行更改的操作，比如增加或者减少节点
 	optional EntryType  Type  = 1 [(gogoproto.nullable) = false];
+	// 一个被序列化后的byte数组，代表当前entry真正要执行的操作，比方说如果上面的Type是EntryNormal，那这里的Data就可能是具体要更改的key-value pair，如果Type是EntryConfChange，那Data就是具体的配置更改项ConfChange。raft算法本身并不关心这个数据是什么，它只是把这段数据当做log同步过程中的payload来处理，具体对这个数据的解析则有上层应用来完成
 	optional bytes      Data  = 4;
 }
 
@@ -34,38 +38,49 @@ message Snapshot {
 }
 
 enum MessageType {
-	MsgHup             = 0;
-	MsgBeat            = 1;
-	MsgProp            = 2;
-	MsgApp             = 3;
-	MsgAppResp         = 4;
-	MsgVote            = 5;
-	MsgVoteResp        = 6;
-	MsgSnap            = 7;
-	MsgHeartbeat       = 8;
-	MsgHeartbeatResp   = 9;
-	MsgUnreachable     = 10;
-	MsgSnapStatus      = 11;
-	MsgCheckQuorum     = 12;
-	MsgTransferLeader  = 13;
-	MsgTimeoutNow      = 14;
-	MsgReadIndex       = 15;
-	MsgReadIndexResp   = 16;
-	MsgPreVote         = 17;
-	MsgPreVoteResp     = 18;
+	MsgHup             = 0;  // 当Follower节点的选举计时器超时，会发送MsgHup消息
+	MsgBeat            = 1;  // Leader发送心跳，主要作用是探活，Follower接收到MsgBeat会重置选举计时器，防止Follower发起新一轮选举
+	MsgProp            = 2;  // 客户端发往到集群的写请求是通过MsgProp消息表示的
+	MsgApp             = 3;  // 当一个节点通过选举成为Leader时，会发送MsgApp消息
+	MsgAppResp         = 4;  // MsgApp的响应消息
+	MsgVote            = 5;  // 当PreCandidate状态节点收到半数以上的投票之后，会发起新一轮的选举，即向集群中的其他节点发送MsgVote消息
+	MsgVoteResp        = 6;  // MsgVote选举消息响应的消息
+	MsgSnap            = 7;  // Leader向Follower发送快照信息
+	MsgHeartbeat       = 8;  // Leader发送的心跳消息
+	MsgHeartbeatResp   = 9;  // Follower处理心跳回复返回的消息类型
+	MsgUnreachable     = 10; // Follower消息不可达
+	MsgSnapStatus      = 11; // 如果Leader发送MsgSnap消息时出现异常，则会调用Raft接口发送MsgUnreachable和MsgSnapStatus消息
+	MsgCheckQuorum     = 12; // Leader检测是否保持半数以上的连接
+	MsgTransferLeader  = 13; // Leader节点转移时使用，本地消息
+	MsgTimeoutNow      = 14; // Leader节点转移超时，会发该类型的消息，使Follower的选举计时器立即过期，并发起新一轮的选举
+	MsgReadIndex       = 15; // 客户端发往集群的只读消息使用MsgReadIndex消息（只读的两种模式：ReadOnlySafe和ReadOnlyLeaseBased）
+	MsgReadIndexResp   = 16; // MsgReadIndex消息的响应消息
+	MsgPreVote         = 17; // PreCandidate状态下的节点发送的消息
+	MsgPreVoteResp     = 18; // 预选节点收到的响应消息
 }
 
 message Message {
+	// 该字段定义了消息的类型，raft实现中就是通过该字段区分不同的消息井进行分类处理的，MessageType中共定义了19 种消息类型，后面会介绍每种消息类型的含义及相应的处理方式
 	optional MessageType type        = 1  [(gogoproto.nullable) = false];
+	//  发送消息的节点ID。在集群中，每个节点都拥有一个唯一ID作为标识
 	optional uint64      to          = 2  [(gogoproto.nullable) = false];
+	// 消息的目标节点ID
 	optional uint64      from        = 3  [(gogoproto.nullable) = false];
+	// 发送消息的节点的Term值。 如果Term值为0，则为本地消息，在etcd刊负模块的实现中，对本地消息进行特殊处理
 	optional uint64      term        = 4  [(gogoproto.nullable) = false];
+	// 如果是MsgApp类型的消息，则该字段中保存了Leader节点复制到Follower节点的Entry记录。在其他类型消息中，该字段的含义后面会详细介绍
 	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];
+	// 该消息携带的第一条Entry记录的Term值
 	optional uint64      index       = 6  [(gogoproto.nullable) = false];
+	// 记录索引值，该索引值的具体含义与消息的类型相关。例如，MsgApp消息的Index宇段保存了其携带的Entry记录（即Entries字段）中前一条记录的Index值，而MsgAppResp消息的Index字段则是Follower节点提示Leader节点下次从哪个位置开始发送Entry记录
 	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];
+	// 消息发送节点的提交位置（commitlndex）
 	optional uint64      commit      = 8  [(gogoproto.nullable) = false];
+	// 在传输快照时，该字段保存了快照数据
 	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];
+	//  主要用于响应类型的消息，表示是否拒绝收到的消息。 例如，Follower节点收到Leader节点发来的MsgApp消息，如果Follower节点发现MsgApp消息携带的Entry记录并不能直接追加到本地的raftLog中， 则会将响应消息的Reject宇段设置为true，并且会在RejectHint字段中记录合适的Entry索引值，供Leader节点参考
 	optional bool        reject      = 10 [(gogoproto.nullable) = false];
+	// 在Follower节点拒绝Leader节点的消息之后，会在该字段记录一个Entry索引值供Leader节点
 	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
 	optional bytes       context     = 12;
 }

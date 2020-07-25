@@ -46,6 +46,13 @@ func (a *SoftState) equal(b *SoftState) bool {
 	return a.Lead == b.Lead && a.RaftState == b.RaftState
 }
 
+// 应用程序得到这个Ready之后，需要：
+// 将HardState, Entries, Snapshot持久化到storage。
+// 将Messages广播给其他节点。
+// 将CommittedEntries（已经commit还没有apply）应用到状态机。
+// 如果发现CommittedEntries中有成员变更类型的entry，调用node.ApplyConfChange()方法让node知道。
+// 最后再调用node.Advance()告诉raft，这批状态更新处理完了，状态已经演进了，可以给我下一批Ready让我处理。
+
 // Ready encapsulates the entries and messages that are ready to read,
 // be saved to stable storage, committed or sent to other peers.
 // All fields in Ready are read-only.
@@ -250,16 +257,18 @@ type msgWithResult struct {
 
 // node is the canonical implementation of the Node interface
 type node struct {
+	// propc和recvc中拿到的是从上层应用传进来的消息，这个消息会被交给raft层的Step函数处理
 	propc      chan msgWithResult
 	recvc      chan pb.Message
 	confc      chan pb.ConfChangeV2
 	confstatec chan pb.ConfState
-	readyc     chan Ready
-	advancec   chan struct{}
-	tickc      chan struct{}
-	done       chan struct{}
-	stop       chan struct{}
-	status     chan chan Status
+	// 在etcd的这个实现中，node并不负责数据的持久化、网络消息的通信、以及将已经提交的log应用到状态机中，所以node使用readyc这个channel对外通知有数据要处理了，并将这些需要外部处理的数据打包到一个Ready结构体中
+	readyc   chan Ready
+	advancec chan struct{}
+	tickc    chan struct{}
+	done     chan struct{}
+	stop     chan struct{}
+	status   chan chan Status
 
 	rn *RawNode
 }

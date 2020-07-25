@@ -28,6 +28,8 @@ import (
 // strewn around `*raft.raft`. Additionally, some fields are only used when in a
 // certain State. All of this isn't ideal.
 type Progress struct {
+	// Match：保存目前为止，已复制给该follower的日志的最高索引值。如果leader对该follower上的日志情况一无所知的话，这个值被设为0
+	// Next：保存下一次leader发送append消息给该follower的日志索引，即下一次复制日志时，leader会从Next开始发送日志
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.
 	//
